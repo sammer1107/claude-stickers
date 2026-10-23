@@ -139,3 +139,17 @@ test('the system prompt says what stickers are and how to write one', async ($, 
   expect(about?.text).toContain('.stickers/')
   expect(about?.text).toContain('on: ')
 })
+
+// ------------------------------------------------------------------ agents
+
+const FILE = 'D:\\proj\\src\\auth\\session.py'
+const isFull = (ran: { context?: readonly string[] }) => (ran.context ?? []).join('\n').includes('Tried caching')
+const isShort = (ran: { context?: readonly string[] }) => (ran.context ?? []).join('\n').includes('unchanged since shown')
+
+test('each subagent sees stickers in full the first time, even after the main agent did', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION })
+  expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
+  expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' }))).toBe(true)
+  expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' }))).toBe(true)
+  expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
+})

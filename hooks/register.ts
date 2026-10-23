@@ -19,6 +19,7 @@ import {
 } from './stickers'
 
 const SHOWN = { plugin: 'stickers', key: 'shown' } as const
+const MAIN = 'main' // the main conversation's loop, which carries no agentId
 
 export const register: Register = on => {
   on('prompt.compose', async ($, e, next) => {
@@ -27,14 +28,20 @@ export const register: Register = on => {
   })
 
   // After the tool has run, add the file's stickers to what the model reads (the user never sees it).
+  // Each agent (main conversation, each subagent) has its own context, so its own "already shown".
   // If anything here fails, the tool's own result goes through unchanged.
-  on('tool.call', { tool: 'Read' }, ($, e, next) => withStickers($, e.file_path, next(e))).catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'Edit' }, ($, e, next) => withStickers($, e.file_path, next(e))).catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'Write' }, ($, e, next) => withStickers($, e.file_path, next(e))).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'Read' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
+    .catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'Edit' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
+    .catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'Write' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
+    .catch(($, e, next) => next(e))
+
 }
 
 async function withStickers<R extends { deny?: string; isError?: boolean; context?: readonly string[] }>(
   $: EngineInterface,
+  agent: string,
   filePath: string,
   running: Promise<R>,
 ): Promise<R> {
@@ -42,7 +49,7 @@ async function withStickers<R extends { deny?: string; isError?: boolean; contex
   if (ran.deny !== undefined || ran.isError) return ran
   let note: string | null = null
   try {
-    note = await stickerNote($, filePath)
+    note = await stickerNote($, agent, filePath)
   } catch {
     return ran // stickers must never break a file tool
   }
@@ -50,7 +57,7 @@ async function withStickers<R extends { deny?: string; isError?: boolean; contex
 }
 
 /** The text to show for the file at `filePath`, or null when it has no stickers. */
-async function stickerNote($: EngineInterface, filePath: string): Promise<string | null> {
+async function stickerNote($: EngineInterface, agent: string, filePath: string): Promise<string | null> {
   const root = await $.session.root()
   const windows = isWindowsRoot(root)
   const target = relativePath(filePath, root)
@@ -61,9 +68,10 @@ async function stickerNote($: EngineInterface, filePath: string): Promise<string
   )
   if (stickers.length === 0) return null
 
-  // Full text the first time in a session, and whenever a sticker changed; a short line otherwise.
+  // Full text the first time this agent opens the file, and whenever a sticker changed;
+  // a short line otherwise.
   const shown: Shown = (await $.state.get(SHOWN)).value ?? {}
-  const key = matchKey(target, windows)
+  const key = `${agent}|${matchKey(target, windows)}`
   const sig = signature(stickers)
   if (shown[key] === sig) return formatUnchanged(target, stickers.length)
   await $.state.set(SHOWN, { ...shown, [key]: sig })

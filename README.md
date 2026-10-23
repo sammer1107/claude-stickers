@@ -27,9 +27,11 @@ Tried caching the token in session.py; broke test_refresh because tokens.py re-r
     Tried caching the token in session.py; broke test_refresh because tokens.py re-reads it.
   ```
 
-  The first time in a session, and whenever a sticker changed, the stickers are shown in
-  full. After that, a short line: `Stickers on src/auth/session.py: 1, unchanged since shown.`
-  Past 4,000 characters only the sticker paths are listed.
+  The first time an agent opens the file, and whenever a sticker on it changed, the stickers
+  are shown in full. After that, a short line: `Stickers on src/auth/session.py: 1, unchanged
+  since shown.` Past 4,000 characters only the sticker paths are listed.
+- **Each agent separately:** the main conversation and every subagent have their own context,
+  so each sees a file's stickers in full the first time it opens it.
 - **Matching:** paths are matched however the tools spell them (absolute or relative,
   backslashes, `./`), ignoring case on Windows. Files inside `.stickers/` themselves never
   show stickers.

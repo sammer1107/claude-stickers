@@ -1,4 +1,4 @@
-/** Per file (case-folded on Windows): a signature of the stickers last shown in full this session. */
+/** Per agent and file (`<agentId or main>|<path, case-folded on Windows>`): a signature of the stickers last shown in full. */
 export type Shown = Record<string, string>
 
 declare module 'claude-code' {
