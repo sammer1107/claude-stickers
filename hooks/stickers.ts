@@ -1,14 +1,32 @@
 // Stickers: notes stuck on files. Pure logic, no engine calls: parsing a sticker's header,
-// matching file paths, and the text the model reads when it opens a file.
+// resolving and matching file paths, and the text the model reads when it opens a file.
+//
+// Two places hold stickers: the project's `.stickers/` (its `on:` paths relative to the
+// project root) and the user's `~/.claude/stickers/` (its `on:` paths absolute or `~/...`),
+// for notes kept out of the project or about files outside it. Every path is compared in
+// absolute form, so both kinds match the same file however a tool spells it.
 
 export const STICKERS_DIR = '.stickers'
+export const USER_STICKERS_DIR = '~/.claude/stickers'
 export const MAX_SHOWN_CHARS = 4000
 
+/** Where paths are resolved from. */
+export type Places = {
+  /** The session's project root, absolute. */
+  root: string
+  /** The user's home folder, absolute, or null when unknown (no user stickers then). */
+  home: string | null
+  /** Windows paths: case is ignored, as the file system does. */
+  windows: boolean
+}
+
 export type Sticker = {
-  /** The sticker's own path, relative to the project root, e.g. `.stickers/cache-attempt.md`. */
+  /** The sticker's own path as shown: `.stickers/x.md` or `~/.claude/stickers/x.md`. */
   path: string
   /** The files it is stuck on, as written in its `on:` header. */
   on: string[]
+  /** The same files, absolute and normalised (see `absolutePath`); unusable entries dropped. */
+  targets: string[]
   /** Its text, without the header. */
   body: string
   mtimeMs: number
@@ -20,7 +38,7 @@ export type Sticker = {
  *     ---
  *     on: src/auth/session.py, src/auth/tokens.py
  *     ---
- *     Tried caching the token here; broke test_refresh because ...
+ *     Do NOT reorder the imports. tokens.py monkey-patches time.time() on import ...
  *
  * Returns null when there is no header or no `on:` line, so a stray file is ignored.
  */
@@ -43,24 +61,26 @@ export function isWindowsRoot(root: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(root)
 }
 
+const clean = (p: string) => p.trim().replace(/\\/g, '/').replace(/\/+/g, '/')
+const isAbsolute = (p: string) => /^[A-Za-z]:\//.test(p) || p.startsWith('/')
+
 /**
- * A path as the project sees it: relative to the root, forward slashes, no `./`.
- * Accepts absolute paths (Windows or POSIX) under the root and relative ones.
- * Returns null for a path outside the project.
+ * A path in one absolute, comparable spelling: forward slashes, no `.` or `..`, no trailing
+ * slash. `~` means the home folder; a relative path is resolved against `base`, or rejected
+ * when `base` is null. Returns null when it can't be resolved.
  */
-export function relativePath(path: string, root: string): string | null {
-  const windows = isWindowsRoot(root)
-  const clean = (p: string) => p.replace(/\\/g, '/').replace(/\/+/g, '/')
-  let p = clean(path.trim())
-  const r = clean(root).replace(/\/$/, '')
-  const isAbsolute = /^[A-Za-z]:\//.test(p) || p.startsWith('/')
-  if (isAbsolute) {
-    const same = windows ? p.toLowerCase().startsWith(r.toLowerCase() + '/') : p.startsWith(r + '/')
-    if (!same) return null
-    p = p.slice(r.length + 1)
+export function absolutePath(path: string, base: string | null, home: string | null): string | null {
+  let p = clean(path)
+  if (p === '~' || p.startsWith('~/')) {
+    if (!home) return null
+    p = clean(home) + p.slice(1)
+  } else if (!isAbsolute(p)) {
+    if (!base) return null
+    p = `${clean(base)}/${p}`
   }
+  const drive = /^[A-Za-z]:/.exec(p)?.[0] ?? ''
   const parts: string[] = []
-  for (const part of p.split('/')) {
+  for (const part of p.slice(drive.length).split('/')) {
     if (part === '' || part === '.') continue
     if (part === '..') {
       if (parts.length === 0) return null
@@ -69,16 +89,39 @@ export function relativePath(path: string, root: string): string | null {
       parts.push(part)
     }
   }
-  return parts.length ? parts.join('/') : null
+  return `${drive}/${parts.join('/')}`
 }
 
-/** The key two paths are compared by: case is ignored on Windows, as the file system does. */
-export function matchKey(relative: string, windows: boolean): string {
-  return windows ? relative.toLowerCase() : relative
+/** The key two absolute paths are compared by: case is ignored on Windows. */
+export function matchKey(absolute: string, windows: boolean): string {
+  return windows ? absolute.toLowerCase() : absolute
 }
 
-export function isInsideStickers(relative: string, windows: boolean): boolean {
-  return matchKey(relative, windows).startsWith(matchKey(STICKERS_DIR + '/', windows))
+/** True when `absolute` is `dir` itself or inside it. */
+export function isUnder(absolute: string, dir: string, windows: boolean): boolean {
+  const a = matchKey(absolute, windows)
+  const d = matchKey(dir, windows).replace(/\/$/, '')
+  return a === d || a.startsWith(d + '/')
+}
+
+/** How a file is named to the model: relative inside the project, `~/...` in the home folder. */
+export function displayPath(absolute: string, places: Places): string {
+  const root = absolutePath(places.root, null, null)
+  if (root && isUnder(absolute, root, places.windows) && absolute.length > root.length) {
+    return absolute.slice(root.length + 1)
+  }
+  const home = places.home && absolutePath(places.home, null, null)
+  if (home && isUnder(absolute, home, places.windows) && absolute.length > home.length) {
+    return `~/${absolute.slice(home.length + 1)}`
+  }
+  return absolute
+}
+
+/** True for the sticker files themselves, which never get stickers. */
+export function isStickerFile(absolute: string, places: Places): boolean {
+  const project = absolutePath(STICKERS_DIR, places.root, null)
+  const user = absolutePath(USER_STICKERS_DIR, null, places.home)
+  return [project, user].some(dir => dir !== null && isUnder(absolute, dir, places.windows))
 }
 
 /** How long ago, roughly: "just now", "5 min ago", "2 h ago", "3 days ago". */
@@ -97,13 +140,12 @@ export function signature(stickers: Sticker[]): string {
 }
 
 /**
- * The full display, shown the first time in a session (and again after any change): each
- * sticker's path to edit, when it was last edited, the other files it is on, and its text.
- * Past MAX_SHOWN_CHARS only the paths are listed, to be Read when needed.
+ * The full display, shown the first time (and again after any change): each sticker's path
+ * to edit, when it was last edited, the other files it is on, and its text. Past
+ * MAX_SHOWN_CHARS only the paths are listed, to be Read when needed.
  */
-export function formatStickers(target: string, stickers: Sticker[], nowMs: number, windows: boolean): string {
-  const others = (s: Sticker) =>
-    s.on.filter(p => matchKey(relativePath(p, '') ?? p, windows) !== matchKey(target, windows))
+export function formatStickers(target: string, targetKey: string, stickers: Sticker[], nowMs: number, windows: boolean): string {
+  const others = (s: Sticker) => s.on.filter((_, i) => s.targets[i] === undefined || matchKey(s.targets[i]!, windows) !== targetKey)
   const header = (s: Sticker) => {
     const also = others(s)
     return `- ${s.path} (edited ${age(s.mtimeMs, nowMs)}${also.length ? `; also on ${also.join(', ')}` : ''})`
@@ -135,6 +177,8 @@ export const ABOUT = [
   'on: src/example.py, src/other.py',
   '---',
   'Your note.',
+  `To keep a note out of the project (personal, or about a file outside it), write it in`,
+  `${USER_STICKERS_DIR}/ instead, with absolute or ~/ paths in its on: line.`,
   'When you Read, Edit or Write a file, its stickers are shown to you with their paths, so you',
   'can edit or delete them like any file.',
 ].join('\n')

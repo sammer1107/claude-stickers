@@ -30,6 +30,7 @@ Do NOT reorder the imports. tokens.py monkey-patches time.time() on import; if s
   Later reads do not see the same note repeated, instead: `Stickers on src/auth/session.py: 1, unchanged
   since shown.` Past 4,000 characters only the sticker paths are listed.
 - **Each agent separately:** the main conversation and every subagent each sees a file's stickers in full the first time it opens it. Touching the files after a `/compact` or `/clear` will show the stickers again.
+- **Personal stickers:** stickers in `~/.claude/stickers/` stay out of the project. Their `on:` paths are absolute or start with `~/` (e.g. `on: ~/.bashrc`), so they can also be stuck on files outside any project.
 
 ## Install
 

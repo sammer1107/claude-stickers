@@ -6,15 +6,18 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { Shown } from '../types'
 import {
   ABOUT,
+  type Places,
   STICKERS_DIR,
   type Sticker,
+  USER_STICKERS_DIR,
+  absolutePath,
+  displayPath,
   formatStickers,
   formatUnchanged,
-  isInsideStickers,
+  isStickerFile,
   isWindowsRoot,
   matchKey,
   parseSticker,
-  relativePath,
   signature,
 } from './stickers'
 
@@ -92,35 +95,59 @@ async function stickerNote(
   remind: boolean,
 ): Promise<string | null> {
   const root = await $.session.root()
-  const windows = isWindowsRoot(root)
-  const target = relativePath(filePath, root)
-  if (!target || isInsideStickers(target, windows)) return null
+  const places: Places = {
+    root,
+    home: (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? null,
+    windows: isWindowsRoot(root),
+  }
+  const file = absolutePath(filePath, root, places.home)
+  if (!file || isStickerFile(file, places)) return null
+  const fileKey = matchKey(file, places.windows)
 
-  const stickers = (await readStickers($, root)).filter(s =>
-    s.on.some(p => matchKey(relativePath(p, root) ?? '', windows) === matchKey(target, windows)),
+  const stickers = (await readAllStickers($, places)).filter(s =>
+    s.targets.some(t => matchKey(t, places.windows) === fileKey),
   )
   if (stickers.length === 0) return null
 
   // Full text the first time this agent opens the file, and whenever a sticker changed;
   // otherwise a short reminder, or nothing.
+  const target = displayPath(file, places)
   const shown: Shown = (await $.state.get(SHOWN)).value ?? {}
-  const key = `${agent}|${matchKey(target, windows)}`
+  const key = `${agent}|${fileKey}`
   const sig = signature(stickers)
   if (shown[key] === sig) return remind ? formatUnchanged(target, stickers.length) : null
   await $.state.set(SHOWN, { ...shown, [key]: sig })
-  return formatStickers(target, stickers, Date.now(), windows)
+  return formatStickers(target, fileKey, stickers, Date.now(), places.windows)
+}
+
+/**
+ * The project's stickers (`on:` relative to the project root) and the user's (`on:` absolute
+ * or `~/...`; a relative path there is ignored, as it names no one project).
+ */
+async function readAllStickers($: EngineInterface, places: Places): Promise<Sticker[]> {
+  const project = absolutePath(STICKERS_DIR, places.root, null)
+  const user = absolutePath(USER_STICKERS_DIR, null, places.home)
+  return [
+    ...(project ? await readStickers($, project, STICKERS_DIR, places.root, places) : []),
+    ...(user ? await readStickers($, user, USER_STICKERS_DIR, null, places) : []),
+  ]
 }
 
 // Parsed stickers by path, reused while a file's modification time is unchanged.
 const cache = new Map<string, { mtimeMs: number; parsed: { on: string[]; body: string } | null }>()
 
-async function readStickers($: EngineInterface, root: string): Promise<Sticker[]> {
-  const dir = `${root.replace(/[\\/]$/, '')}/${STICKERS_DIR}`
+async function readStickers(
+  $: EngineInterface,
+  dir: string,
+  shownAs: string,
+  base: string | null,
+  places: Places,
+): Promise<Sticker[]> {
   let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
   try {
     entries = await $.fs.list(dir)
   } catch {
-    return [] // no stickers folder in this project
+    return [] // no stickers folder here
   }
   const stickers: Sticker[] = []
   for (const entry of entries) {
@@ -132,9 +159,15 @@ async function readStickers($: EngineInterface, root: string): Promise<Sticker[]
       hit = { mtimeMs: entry.mtimeMs, parsed: typeof text === 'string' ? parseSticker(text) : null }
       cache.set(path, hit)
     }
-    if (hit.parsed) {
-      stickers.push({ path: `${STICKERS_DIR}/${entry.name}`, mtimeMs: entry.mtimeMs, ...hit.parsed })
-    }
+    if (!hit.parsed) continue
+    const targets = hit.parsed.on.map(p => absolutePath(p, base, places.home) ?? '')
+    stickers.push({
+      path: `${shownAs}/${entry.name}`,
+      mtimeMs: entry.mtimeMs,
+      on: hit.parsed.on,
+      targets,
+      body: hit.parsed.body,
+    })
   }
   return stickers
 }

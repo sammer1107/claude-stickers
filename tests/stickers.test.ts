@@ -2,9 +2,11 @@ import { expect, test } from 'claude-code/testing'
 import {
   MAX_SHOWN_CHARS,
   age,
+  absolutePath,
+  displayPath,
   formatStickers,
+  isStickerFile,
   parseSticker,
-  relativePath,
 } from '../hooks/stickers'
 
 // ------------------------------------------------------------------ pure logic
@@ -20,15 +22,26 @@ test('a sticker header names the files it is stuck on', async () => {
   expect(parseSticker('---\non:\n---\nbody')).toBe(null)
 })
 
-test('paths match however the tools spell them', async () => {
+test('paths resolve to one absolute spelling however the tools spell them', async () => {
+  const home = 'D:\\Users\\me'
   const root = 'D:\\Users\\me\\proj'
-  expect(relativePath('D:\\Users\\me\\proj\\src\\a.py', root)).toBe('src/a.py')
-  expect(relativePath('d:/users/me/PROJ/src/a.py', root)).toBe('src/a.py')
-  expect(relativePath('./src//a.py', root)).toBe('src/a.py')
-  expect(relativePath('src/x/../a.py', root)).toBe('src/a.py')
-  expect(relativePath('D:\\elsewhere\\a.py', root)).toBe(null)
-  expect(relativePath('/home/me/proj/src/a.py', '/home/me/proj')).toBe('src/a.py')
-  expect(relativePath('/home/me/other/a.py', '/home/me/proj')).toBe(null)
+  expect(absolutePath('D:\\Users\\me\\proj\\src\\a.py', root, home)).toBe('D:/Users/me/proj/src/a.py')
+  expect(absolutePath('./src//a.py', root, home)).toBe('D:/Users/me/proj/src/a.py')
+  expect(absolutePath('src/x/../a.py', root, home)).toBe('D:/Users/me/proj/src/a.py')
+  expect(absolutePath('~/.bashrc', root, home)).toBe('D:/Users/me/.bashrc')
+  expect(absolutePath('~/.bashrc', root, null)).toBe(null)
+  expect(absolutePath('src/a.py', null, home)).toBe(null)
+  expect(absolutePath('/home/me/proj/src/a.py', '/home/me/proj', '/home/me')).toBe('/home/me/proj/src/a.py')
+})
+
+test('files are named relative to the project, ~/ in the home folder, absolute elsewhere', async () => {
+  const places = { root: 'D:\\Users\\me\\proj', home: 'D:\\Users\\me', windows: true }
+  expect(displayPath('d:/users/me/PROJ/src/a.py', places)).toBe('src/a.py')
+  expect(displayPath('D:/Users/me/.bashrc', places)).toBe('~/.bashrc')
+  expect(displayPath('E:/shared/lib.py', places)).toBe('E:/shared/lib.py')
+  expect(isStickerFile('D:/Users/me/proj/.stickers/x.md', places)).toBe(true)
+  expect(isStickerFile('D:/Users/me/.claude/stickers/x.md', places)).toBe(true)
+  expect(isStickerFile('D:/Users/me/proj/src/a.py', places)).toBe(false)
 })
 
 test('ages read naturally', async () => {
@@ -41,8 +54,8 @@ test('ages read naturally', async () => {
 })
 
 test('a very long display lists only the sticker paths', async () => {
-  const big = { path: '.stickers/big.md', on: ['src/a.py'], body: 'x'.repeat(MAX_SHOWN_CHARS), mtimeMs: 0 }
-  const text = formatStickers('src/a.py', [big], 0, false)
+  const big = { path: '.stickers/big.md', on: ['src/a.py'], targets: ['/p/src/a.py'], body: 'x'.repeat(MAX_SHOWN_CHARS), mtimeMs: 0 }
+  const text = formatStickers('src/a.py', '/p/src/a.py', [big], 0, false)
   expect(text).toContain('.stickers/big.md')
   expect(text).not.toContain('xxxx')
   expect(text).toContain('Read a sticker to see it')
@@ -51,22 +64,36 @@ test('a very long display lists only the sticker paths', async () => {
 // ------------------------------------------------------------------ in the engine
 
 const ROOT = 'D:\\proj'
+const HOME = 'D:\\Users\\me'
 
-/** A fake project: `files` maps sticker file names to their text, `mtimes` to their mtimes. */
-function project(on: any, files: Record<string, string>, mtimes: Record<string, number> = {}) {
+/**
+ * A fake project: `files` maps project sticker names to their text, `userFiles` the user's
+ * (in ~/.claude/stickers/), `mtimes` any sticker's modification time.
+ */
+function project(
+  on: any,
+  files: Record<string, string>,
+  mtimes: Record<string, number> = {},
+  userFiles: Record<string, string> = {},
+  home: string | null = HOME, // null: no home folder variable is set
+) {
+  const isUserDir = (path: string) => /[\\/]\.claude[\\/]stickers([\\/]|$)/.test(path)
   on('session.root', () => ({ value: ROOT }))
+  on('env.get', ($: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? (home ?? undefined) : undefined }))
   on('fs.list', ($: unknown, e: { path: string }) => {
-    if (!/[\\/]\.stickers$/.test(e.path)) throw new Error(`no such folder: ${e.path}`)
+    const folder = isUserDir(e.path) ? userFiles : /[\\/]\.stickers$/.test(e.path) ? files : null
+    if (!folder || Object.keys(folder).length === 0) throw new Error(`no such folder: ${e.path}`)
     return {
-      value: Object.keys(files).map(name => ({
-        name, kind: 'file', size: files[name]!.length, mtimeMs: mtimes[name] ?? 1, isLink: false,
+      value: Object.keys(folder).map(name => ({
+        name, kind: 'file', size: folder[name]!.length, mtimeMs: mtimes[name] ?? 1, isLink: false,
       })),
     }
   })
   on('fs.read', ($: unknown, e: { path: string }) => {
     const name = e.path.split(/[\\/]/).pop()!
-    if (!(name in files)) throw new Error(`no such file: ${e.path}`)
-    return { value: files[name] }
+    const folder = isUserDir(e.path) ? userFiles : files
+    if (!(name in folder)) throw new Error(`no such file: ${e.path}`)
+    return { value: folder[name] }
   })
   // Stands for the file tools themselves: they succeed and return nothing of interest.
   on('tool.call', () => ({ result: {} }))
@@ -148,6 +175,43 @@ test('the system prompt says what stickers are and how to write one', async ($, 
   const about = sections.find(s => s.id === 'stickers:about')
   expect(about?.text).toContain('.stickers/')
   expect(about?.text).toContain('on: ')
+  expect(about?.text).toContain('~/.claude/stickers/')
+})
+
+// ------------------------------------------------------------------ user stickers
+
+const USER_SESSION = '---\non: D:/proj/src/auth/session.py\n---\nPersonal: I always forget this file has a gotcha.'
+const USER_BASHRC = '---\non: ~/.bashrc\n---\nPATH order matters here.'
+const USER_RELATIVE = '---\non: src/auth/session.py\n---\nNever shown: a relative path names no one project.'
+
+test('user stickers show alongside project ones, with their ~/.claude/stickers path', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION }, {}, { 'mine.md': USER_SESSION, 'relative.md': USER_RELATIVE })
+  const shown = ((await $.tool.call({ tool: 'Read', file_path: 'D:\\proj\\src\\auth\\session.py' })).context ?? []).join('\n')
+  expect(shown).toContain('Stickers on src/auth/session.py (2):')
+  expect(shown).toContain('.stickers/cache-attempt.md')
+  expect(shown).toContain('~/.claude/stickers/mine.md')
+  expect(shown).toContain('Personal: I always forget this file has a gotcha.')
+  expect(shown).not.toContain('Never shown')
+})
+
+test('a user sticker can be stuck on a file outside the project', async ($, on) => {
+  project(on, {}, {}, { 'bashrc.md': USER_BASHRC })
+  const shown = ((await $.tool.call({ tool: 'Read', file_path: 'D:\\Users\\me\\.bashrc' })).context ?? []).join('\n')
+  expect(shown).toContain('Stickers on ~/.bashrc (1):')
+  expect(shown).toContain('PATH order matters here.')
+})
+
+test('without a home folder, user stickers are skipped and project ones still work', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION }, {}, { 'mine.md': USER_SESSION }, null)
+  const shown = ((await $.tool.call({ tool: 'Read', file_path: 'D:\\proj\\src\\auth\\session.py' })).context ?? []).join('\n')
+  expect(shown).toContain('Tried caching the token here')
+  expect(shown).not.toContain('Personal')
+})
+
+test('the user sticker files themselves never show stickers', async ($, on) => {
+  project(on, {}, {}, { 'mine.md': '---\non: ~/.claude/stickers/mine.md\n---\nA sticker on itself.' })
+  const ran = await $.tool.call({ tool: 'Read', file_path: 'D:\\Users\\me\\.claude\\stickers\\mine.md' })
+  expect(ran.context ?? []).toEqual([])
 })
 
 // ------------------------------------------------------------------ agents, compaction, /clear
