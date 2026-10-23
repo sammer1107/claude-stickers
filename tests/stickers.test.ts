@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import {
   MAX_SHOWN_CHARS,
   age,
@@ -66,9 +66,14 @@ test('a very long display lists only the sticker paths', async () => {
 const ROOT = 'D:\\proj'
 const HOME = 'D:\\Users\\me'
 
+// Each test's clock starts far past the last one's, so the mod's folder cache (which lives as
+// long as the loaded mod) is always stale for a new test.
+let clockStart = 0
+
 /**
- * A fake project: `files` maps project sticker names to their text, `userFiles` the user's
- * (in ~/.claude/stickers/), `mtimes` any sticker's modification time.
+ * A fake project: `files` maps the project root's sticker names to their text, `userFiles` the
+ * user's (in ~/.claude/stickers/), `more` other `.stickers/` folders by absolute path, `mtimes`
+ * any sticker's modification time. Returns the test's clock and every folder the mod listed.
  */
 function project(
   on: any,
@@ -76,12 +81,20 @@ function project(
   mtimes: Record<string, number> = {},
   userFiles: Record<string, string> = {},
   home: string | null = HOME, // null: no home folder variable is set
+  more: Record<string, Record<string, string>> = {},
 ) {
-  const isUserDir = (path: string) => /[\\/]\.claude[\\/]stickers([\\/]|$)/.test(path)
+  const key = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const folders = new Map<string, Record<string, string>>([[key(`${ROOT}/.stickers`), files]])
+  if (home) folders.set(key(`${home}/.claude/stickers`), userFiles)
+  for (const [folder, stickers] of Object.entries(more)) folders.set(key(folder), stickers)
+  const lists: string[] = []
+  const clock = mock.clock(on, { now: (clockStart += 1e9) })
+
   on('session.root', () => ({ value: ROOT }))
   on('env.get', ($: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? (home ?? undefined) : undefined }))
   on('fs.list', ($: unknown, e: { path: string }) => {
-    const folder = isUserDir(e.path) ? userFiles : /[\\/]\.stickers$/.test(e.path) ? files : null
+    lists.push(e.path)
+    const folder = folders.get(key(e.path))
     if (!folder || Object.keys(folder).length === 0) throw new Error(`no such folder: ${e.path}`)
     return {
       value: Object.keys(folder).map(name => ({
@@ -90,13 +103,15 @@ function project(
     }
   })
   on('fs.read', ($: unknown, e: { path: string }) => {
-    const name = e.path.split(/[\\/]/).pop()!
-    const folder = isUserDir(e.path) ? userFiles : files
-    if (!(name in folder)) throw new Error(`no such file: ${e.path}`)
+    const slash = e.path.replace(/\\/g, '/').lastIndexOf('/')
+    const folder = folders.get(key(e.path.slice(0, slash)))
+    const name = e.path.slice(slash + 1)
+    if (!folder || !(name in folder)) throw new Error(`no such file: ${e.path}`)
     return { value: folder[name] }
   })
   // Stands for the file tools themselves: they succeed and return nothing of interest.
   on('tool.call', () => ({ result: {} }))
+  return { clock, lists }
 }
 
 const SESSION = '---\non: src/auth/session.py, src/auth/tokens.py\n---\nTried caching the token here; broke test_refresh.'
@@ -116,7 +131,7 @@ test('opening a file shows its stickers in full, with their path and the other f
 
 test('later reads show a short line; later edits and writes show nothing, until a sticker changes', async ($, on) => {
   const mtimes = { 'cache-attempt.md': 1 }
-  project(on, { 'cache-attempt.md': SESSION }, mtimes)
+  const { clock } = project(on, { 'cache-attempt.md': SESSION }, mtimes)
   const file = 'D:\\proj\\src\\auth\\session.py'
   await $.tool.call({ tool: 'Read', file_path: file })
 
@@ -127,7 +142,8 @@ test('later reads show a short line; later edits and writes show nothing, until 
   const written = await $.tool.call({ tool: 'Write', file_path: file, content: '' })
   expect(written.context ?? []).toEqual([])
 
-  mtimes['cache-attempt.md'] = 2 // the sticker was edited: even an Edit shows it in full
+  mtimes['cache-attempt.md'] = 2 // the sticker was edited (outside Claude): even an Edit shows it in full,
+  await clock.advance(10_001) // once the folder listing is older than its cache time
   const changed = await $.tool.call({ tool: 'Edit', file_path: file, old_string: 'b', new_string: 'c' })
   expect((changed.context ?? []).join('\n')).toContain('Tried caching the token here')
 })
@@ -279,4 +295,62 @@ test('a subagent is told about stickers in its task', async ($, on) => {
   })
   expect(task.startsWith('Fix the failing test.')).toBe(true)
   expect(task).toContain('Stickers: notes stuck on files')
+})
+
+// ------------------------------------------------------------------ .stickers/ in every ancestor folder
+
+test('a file in another project gets that project\'s stickers', async ($, on) => {
+  project(on, {}, {}, {}, HOME, {
+    'D:/other/.stickers': { 'o.md': '---\non: lib/x.py\n---\nOther project note.' },
+  })
+  const shown = ((await $.tool.call({ tool: 'Read', file_path: 'D:\\other\\lib\\x.py' })).context ?? []).join('\n')
+  expect(shown).toContain('Stickers on D:/other/lib/x.py (1):')
+  expect(shown).toContain('- D:/other/.stickers/o.md (edited ')
+  expect(shown).toContain('Other project note.')
+})
+
+test('stickers from every ancestor folder apply, each relative to its own folder', async ($, on) => {
+  project(on, { 'root.md': '---\non: pkg/api/a.py\n---\nRoot note.' }, {}, {}, HOME, {
+    'D:/proj/pkg/api/.stickers': { 'pkg.md': '---\non: a.py\n---\nPackage note.' },
+    'D:/proj/pkg/.stickers': { 'mid.md': '---\non: api/a.py\n---\nMiddle note.' },
+  })
+  const shown = ((await $.tool.call({ tool: 'Read', file_path: 'D:\\proj\\pkg\\api\\a.py' })).context ?? []).join('\n')
+  expect(shown).toContain('Stickers on pkg/api/a.py (3):')
+  for (const text of ['pkg/api/.stickers/pkg.md', 'pkg/.stickers/mid.md', '.stickers/root.md', 'Package note.', 'Middle note.', 'Root note.']) {
+    expect(shown).toContain(text)
+  }
+  // A file inside a nested .stickers/ is a sticker itself, never a target.
+  const ran = await $.tool.call({ tool: 'Read', file_path: 'D:\\proj\\pkg\\api\\.stickers\\pkg.md' })
+  expect(ran.context ?? []).toEqual([])
+})
+
+test('reading many files checks each folder once within the cache time', async ($, on) => {
+  const { clock, lists } = project(on, {})
+  for (let i = 0; i < 50; i++) {
+    await $.tool.call({ tool: 'Read', file_path: `D:\\proj\\src\\deep\\file${i}.py` })
+  }
+  // D:/proj/src/deep, D:/proj/src, D:/proj, D: and the user's folder: one listing each.
+  expect(lists.length).toBe(5)
+
+  await clock.advance(10_001)
+  await $.tool.call({ tool: 'Read', file_path: 'D:\\proj\\src\\deep\\file0.py' })
+  expect(lists.length).toBe(10)
+})
+
+test('a sticker the agent writes shows at once; one changed elsewhere, within the cache time', async ($, on) => {
+  const files: Record<string, string> = {}
+  const { clock } = project(on, files)
+  const target = 'D:\\proj\\src\\a.py'
+  expect((await $.tool.call({ tool: 'Read', file_path: target })).context ?? []).toEqual([])
+
+  // The agent writes a sticker: its folder's cached listing is dropped right away.
+  files['new.md'] = '---\non: src/a.py\n---\nJust written.'
+  await $.tool.call({ tool: 'Write', file_path: 'D:\\proj\\.stickers\\new.md', content: files['new.md'] })
+  expect(((await $.tool.call({ tool: 'Read', file_path: target })).context ?? []).join('\n')).toContain('Just written.')
+
+  // Someone else adds one (no tool call): it shows once the listing is older than the cache time.
+  files['other.md'] = '---\non: src/a.py\n---\nAdded in an editor.'
+  expect(((await $.tool.call({ tool: 'Read', file_path: target })).context ?? []).join('\n')).not.toContain('Added in an editor.')
+  await clock.advance(10_001)
+  expect(((await $.tool.call({ tool: 'Read', file_path: target })).context ?? []).join('\n')).toContain('Added in an editor.')
 })

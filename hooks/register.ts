@@ -7,9 +7,7 @@ import type { Shown } from '../types'
 import {
   ABOUT,
   type Places,
-  STICKERS_DIR,
   type Sticker,
-  USER_STICKERS_DIR,
   absolutePath,
   displayPath,
   formatStickers,
@@ -19,6 +17,7 @@ import {
   matchKey,
   parseSticker,
   signature,
+  stickerFolders,
 } from './stickers'
 
 const SHOWN = { plugin: 'stickers', key: 'shown' } as const
@@ -101,10 +100,15 @@ async function stickerNote(
     windows: isWindowsRoot(root),
   }
   const file = absolutePath(filePath, root, places.home)
-  if (!file || isStickerFile(file, places)) return null
+  if (!file) return null
+  if (isStickerFile(file, places)) {
+    // A sticker was read or written: its folder's listing may be stale now.
+    folderCache.delete(matchKey(file.slice(0, file.lastIndexOf('/')), places.windows))
+    return null
+  }
   const fileKey = matchKey(file, places.windows)
 
-  const stickers = (await readAllStickers($, places)).filter(s =>
+  const stickers = (await readAllStickers($, file, places)).filter(s =>
     s.targets.some(t => matchKey(t, places.windows) === fileKey),
   )
   if (stickers.length === 0) return null
@@ -117,42 +121,55 @@ async function stickerNote(
   const sig = signature(stickers)
   if (shown[key] === sig) return remind ? formatUnchanged(target, stickers.length) : null
   await $.state.set(SHOWN, { ...shown, [key]: sig })
-  return formatStickers(target, fileKey, stickers, Date.now(), places.windows)
+  return formatStickers(target, fileKey, stickers, await $.clock.now(), places.windows)
 }
 
 /**
- * The project's stickers (`on:` relative to the project root) and the user's (`on:` absolute
- * or `~/...`; a relative path there is ignored, as it names no one project).
+ * The stickers that may apply to `file`: from the `.stickers/` in its folder and every folder
+ * above it (`on:` relative to the folder holding that `.stickers/`), and the user's (`on:`
+ * absolute or `~/...`; a relative path there is ignored, as it names no one project).
  */
-async function readAllStickers($: EngineInterface, places: Places): Promise<Sticker[]> {
-  const project = absolutePath(STICKERS_DIR, places.root, null)
-  const user = absolutePath(USER_STICKERS_DIR, null, places.home)
-  return [
-    ...(project ? await readStickers($, project, STICKERS_DIR, places.root, places) : []),
-    ...(user ? await readStickers($, user, USER_STICKERS_DIR, null, places) : []),
-  ]
+async function readAllStickers($: EngineInterface, file: string, places: Places): Promise<Sticker[]> {
+  const stickers: Sticker[] = []
+  for (const { folder, base } of stickerFolders(file, places)) {
+    stickers.push(...(await readStickers($, folder, base, places)))
+  }
+  return stickers
+}
+
+// Folder listings, reused for FOLDER_TTL_MS: reading many files checks each ancestor folder
+// about once, not once per file. A missing folder is cached too (as null). The agent's own
+// changes to a sticker drop its folder's entry at once (see stickerNote); changes made
+// elsewhere show within the TTL.
+const FOLDER_TTL_MS = 10_000
+type Listing = Awaited<ReturnType<EngineInterface['fs']['list']>>
+const folderCache = new Map<string, { at: number; entries: Listing | null }>()
+
+async function listFolder($: EngineInterface, folder: string, windows: boolean): Promise<Listing | null> {
+  const key = matchKey(folder, windows)
+  const now = await $.clock.now()
+  const hit = folderCache.get(key)
+  if (hit && now - hit.at < FOLDER_TTL_MS) return hit.entries
+  let entries: Listing | null
+  try {
+    entries = await $.fs.list(folder)
+  } catch {
+    entries = null // no stickers folder here
+  }
+  folderCache.set(key, { at: now, entries })
+  return entries
 }
 
 // Parsed stickers by path, reused while a file's modification time is unchanged.
 const cache = new Map<string, { mtimeMs: number; parsed: { on: string[]; body: string } | null }>()
 
-async function readStickers(
-  $: EngineInterface,
-  dir: string,
-  shownAs: string,
-  base: string | null,
-  places: Places,
-): Promise<Sticker[]> {
-  let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
-  try {
-    entries = await $.fs.list(dir)
-  } catch {
-    return [] // no stickers folder here
-  }
+async function readStickers($: EngineInterface, folder: string, base: string | null, places: Places): Promise<Sticker[]> {
+  const entries = await listFolder($, folder, places.windows)
+  if (!entries) return []
   const stickers: Sticker[] = []
   for (const entry of entries) {
     if (entry.kind !== 'file' || !entry.name.toLowerCase().endsWith('.md')) continue
-    const path = `${dir}/${entry.name}`
+    const path = `${folder}/${entry.name}`
     let hit = cache.get(path)
     if (!hit || hit.mtimeMs !== entry.mtimeMs) {
       const text = await $.fs.read(path)
@@ -160,12 +177,11 @@ async function readStickers(
       cache.set(path, hit)
     }
     if (!hit.parsed) continue
-    const targets = hit.parsed.on.map(p => absolutePath(p, base, places.home) ?? '')
     stickers.push({
-      path: `${shownAs}/${entry.name}`,
+      path: displayPath(path, places),
       mtimeMs: entry.mtimeMs,
       on: hit.parsed.on,
-      targets,
+      targets: hit.parsed.on.map(p => absolutePath(p, base, places.home) ?? ''),
       body: hit.parsed.body,
     })
   }

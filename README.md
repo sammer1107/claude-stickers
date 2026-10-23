@@ -6,8 +6,7 @@ The agent does not need to remember manually looking up related knowledge stored
 
 ## How it works
 
-A sticker is a markdown file in `.stickers/` at the project root (any name), starting with
-a header that names the file or files it is stuck on, relative to the project root:
+A sticker is a markdown file (any name) in a `.stickers/` folder, starting with a header that names the file or files it is stuck on:
 
 ```markdown
 ---
@@ -30,7 +29,15 @@ Do NOT reorder the imports. tokens.py monkey-patches time.time() on import; if s
   Later reads do not see the same note repeated, instead: `Stickers on src/auth/session.py: 1, unchanged
   since shown.` Past 4,000 characters only the sticker paths are listed.
 - **Each agent separately:** the main conversation and every subagent each sees a file's stickers in full the first time it opens it. Touching the files after a `/compact` or `/clear` will show the stickers again.
-- **Personal stickers:** stickers in `~/.claude/stickers/` stay out of the project. Their `on:` paths are absolute or start with `~/` (e.g. `on: ~/.bashrc`), so they can also be stuck on files outside any project.
+
+## Where stickers live
+
+| Folder | What it's for | `on:` paths are |
+|---|---|---|
+| `.stickers/` in project root or any folder | Notes that belong with the project or folder | Relative to the folder holding that `.stickers/` |
+| `~/.claude/stickers/` | Personal notes, kept out of every project, or notes on files outside any project | Absolute, or starting with `~/`; relative paths are ignored |
+
+- **Lookup:** a file's stickers come from the `.stickers/` in its own folder and in every folder above it, plus `~/.claude/stickers/`.
 
 ## Install
 

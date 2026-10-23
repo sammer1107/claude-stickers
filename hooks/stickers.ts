@@ -1,10 +1,11 @@
 // Stickers: notes stuck on files. Pure logic, no engine calls: parsing a sticker's header,
 // resolving and matching file paths, and the text the model reads when it opens a file.
 //
-// Two places hold stickers: the project's `.stickers/` (its `on:` paths relative to the
-// project root) and the user's `~/.claude/stickers/` (its `on:` paths absolute or `~/...`),
-// for notes kept out of the project or about files outside it. Every path is compared in
-// absolute form, so both kinds match the same file however a tool spells it.
+// Stickers live in `.stickers/` folders: a file's stickers can come from the `.stickers/` in
+// its own folder or in any folder above it (each one's `on:` paths relative to the folder that
+// holds it), so a file in another project or a monorepo package finds its own. The user's
+// `~/.claude/stickers/` (its `on:` paths absolute or `~/...`) holds notes kept out of every
+// project. Every path is compared in absolute form, so all match a file however a tool spells it.
 
 export const STICKERS_DIR = '.stickers'
 export const USER_STICKERS_DIR = '~/.claude/stickers'
@@ -117,11 +118,31 @@ export function displayPath(absolute: string, places: Places): string {
   return absolute
 }
 
-/** True for the sticker files themselves, which never get stickers. */
+/** True for the sticker files themselves (inside any `.stickers/` or the user's folder), which never get stickers. */
 export function isStickerFile(absolute: string, places: Places): boolean {
-  const project = absolutePath(STICKERS_DIR, places.root, null)
   const user = absolutePath(USER_STICKERS_DIR, null, places.home)
-  return [project, user].some(dir => dir !== null && isUnder(absolute, dir, places.windows))
+  if (user && isUnder(absolute, user, places.windows)) return true
+  const folders = absolute.split('/').slice(0, -1)
+  return folders.some(part => matchKey(part, places.windows) === matchKey(STICKERS_DIR, places.windows))
+}
+
+/** A folder that may hold stickers, and what its stickers' relative `on:` paths resolve against. */
+export type StickerFolder = { folder: string; base: string | null }
+
+/**
+ * Every folder that may hold stickers for `file`: the `.stickers/` in its own folder and in each
+ * folder above it, nearest first, then the user's (whose relative `on:` paths are ignored).
+ */
+export function stickerFolders(file: string, places: Places): StickerFolder[] {
+  const parts = file.split('/')
+  const folders: StickerFolder[] = []
+  for (let n = parts.length - 1; n >= 1; n--) {
+    const dir = parts.slice(0, n).join('/') || '' // '' is the POSIX root
+    folders.push({ folder: `${dir}/${STICKERS_DIR}`, base: dir || '/' })
+  }
+  const user = absolutePath(USER_STICKERS_DIR, null, places.home)
+  if (user) folders.push({ folder: user, base: null })
+  return folders
 }
 
 /** How long ago, roughly: "just now", "5 min ago", "2 h ago", "3 days ago". */
@@ -171,8 +192,8 @@ function indent(text: string): string {
 /** The system prompt section that says stickers exist and how to write one; not when to. */
 export const ABOUT = [
   'Stickers: notes stuck on files in this project, kept across sessions.',
-  `To leave one, write a markdown file in ${STICKERS_DIR}/ (any name) that starts with a header naming`,
-  'the file or files it is stuck on, relative to the project root:',
+  `To leave one, write a markdown file in the project root's ${STICKERS_DIR}/ (any name) that starts with a`,
+  `header naming the file or files it is stuck on, relative to the folder holding that ${STICKERS_DIR}/:`,
   '---',
   'on: src/example.py, src/other.py',
   '---',
