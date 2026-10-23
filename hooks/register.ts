@@ -1,0 +1,99 @@
+// Shows an agent the stickers on a file whenever it reads, edits or writes that file,
+// and tells it once, in the system prompt, how to leave one. No tool of its own:
+// stickers are plain files the agent writes and edits with the tools it already has.
+
+import type { EngineInterface, Register } from 'claude-code'
+import type { Shown } from '../types'
+import {
+  ABOUT,
+  STICKERS_DIR,
+  type Sticker,
+  formatStickers,
+  formatUnchanged,
+  isInsideStickers,
+  isWindowsRoot,
+  matchKey,
+  parseSticker,
+  relativePath,
+  signature,
+} from './stickers'
+
+const SHOWN = { plugin: 'stickers', key: 'shown' } as const
+
+export const register: Register = on => {
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    return { sections: [...composed.sections, { id: 'stickers:about', text: ABOUT, scope: 'session' as const }] }
+  })
+
+  // After the tool has run, add the file's stickers to what the model reads (the user never sees it).
+  // If anything here fails, the tool's own result goes through unchanged.
+  on('tool.call', { tool: 'Read' }, ($, e, next) => withStickers($, e.file_path, next(e))).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'Edit' }, ($, e, next) => withStickers($, e.file_path, next(e))).catch(($, e, next) => next(e))
+  on('tool.call', { tool: 'Write' }, ($, e, next) => withStickers($, e.file_path, next(e))).catch(($, e, next) => next(e))
+}
+
+async function withStickers<R extends { deny?: string; isError?: boolean; context?: readonly string[] }>(
+  $: EngineInterface,
+  filePath: string,
+  running: Promise<R>,
+): Promise<R> {
+  const ran = await running
+  if (ran.deny !== undefined || ran.isError) return ran
+  let note: string | null = null
+  try {
+    note = await stickerNote($, filePath)
+  } catch {
+    return ran // stickers must never break a file tool
+  }
+  return note ? { ...ran, context: [...(ran.context ?? []), note] } : ran
+}
+
+/** The text to show for the file at `filePath`, or null when it has no stickers. */
+async function stickerNote($: EngineInterface, filePath: string): Promise<string | null> {
+  const root = await $.session.root()
+  const windows = isWindowsRoot(root)
+  const target = relativePath(filePath, root)
+  if (!target || isInsideStickers(target, windows)) return null
+
+  const stickers = (await readStickers($, root)).filter(s =>
+    s.on.some(p => matchKey(relativePath(p, root) ?? '', windows) === matchKey(target, windows)),
+  )
+  if (stickers.length === 0) return null
+
+  // Full text the first time in a session, and whenever a sticker changed; a short line otherwise.
+  const shown: Shown = (await $.state.get(SHOWN)).value ?? {}
+  const key = matchKey(target, windows)
+  const sig = signature(stickers)
+  if (shown[key] === sig) return formatUnchanged(target, stickers.length)
+  await $.state.set(SHOWN, { ...shown, [key]: sig })
+  return formatStickers(target, stickers, Date.now(), windows)
+}
+
+// Parsed stickers by path, reused while a file's modification time is unchanged.
+const cache = new Map<string, { mtimeMs: number; parsed: { on: string[]; body: string } | null }>()
+
+async function readStickers($: EngineInterface, root: string): Promise<Sticker[]> {
+  const dir = `${root.replace(/[\\/]$/, '')}/${STICKERS_DIR}`
+  let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
+  try {
+    entries = await $.fs.list(dir)
+  } catch {
+    return [] // no stickers folder in this project
+  }
+  const stickers: Sticker[] = []
+  for (const entry of entries) {
+    if (entry.kind !== 'file' || !entry.name.toLowerCase().endsWith('.md')) continue
+    const path = `${dir}/${entry.name}`
+    let hit = cache.get(path)
+    if (!hit || hit.mtimeMs !== entry.mtimeMs) {
+      const text = await $.fs.read(path)
+      hit = { mtimeMs: entry.mtimeMs, parsed: typeof text === 'string' ? parseSticker(text) : null }
+      cache.set(path, hit)
+    }
+    if (hit.parsed) {
+      stickers.push({ path: `${STICKERS_DIR}/${entry.name}`, mtimeMs: entry.mtimeMs, ...hit.parsed })
+    }
+  }
+  return stickers
+}

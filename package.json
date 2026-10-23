@@ -1,0 +1,13 @@
+{
+  "name": "claude-stickers",
+  "private": true,
+  "description": "Development tooling for the stickers Claude Code mod (type-checking only; the mod has no runtime dependencies).",
+  "scripts": {
+    "validate": "claude plugin validate .",
+    "test": "claude plugin test .",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

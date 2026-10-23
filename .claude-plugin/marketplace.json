@@ -1,0 +1,14 @@
+{
+  "name": "claude-stickers",
+  "description": "Stickers: notes stuck on files, shown to Claude automatically when it opens them.",
+  "owner": {
+    "name": "Yu-Jen Lin"
+  },
+  "plugins": [
+    {
+      "name": "stickers",
+      "source": "./",
+      "description": "Notes stuck on files, shown automatically when the agent opens them."
+    }
+  ]
+}

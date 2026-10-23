@@ -1,0 +1,9 @@
+{
+  "name": "stickers",
+  "version": "0.1.0",
+  "description": "Notes stuck on files: when the agent reads, edits or writes a file, its stickers are shown automatically.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Yu-Jen Lin"
+  }
+}
