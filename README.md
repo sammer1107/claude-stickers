@@ -42,26 +42,23 @@ Do NOT reorder the imports. tokens.py monkey-patches time.time() on import; if s
 
 ## Install
 
-From a clone of this repository (Git Bash):
-
 ```bash
-claude plugin marketplace add "/path/to/claude-stickers"
+claude plugin marketplace add sammer1107/claude-stickers
 claude plugin install stickers@claude-stickers
 ```
-
-Because the marketplace is a local folder, edits to it reach a session with
-`/reload-plugins`, with no reinstall.
 
 ## Develop
 
 Stickers is a Claude Code mod: a TypeScript hooks module (`hooks/register.ts`) with its
-logic in `hooks/stickers.ts`.
+logic in `hooks/stickers.ts`, plus a skill (`skills/add-sticker`).
 
 ```bash
 npm install                  # TypeScript, for type-checking
 claude plugin validate .     # what the engine will load, and what it would refuse
 claude plugin test .         # tests/*.test.ts, run in the engine's own test kit
 ```
+
+To run your clone, use `claude plugin marketplace add /path/to/claude-stickers` instead.
 
 Type-checking (`npx tsc -p .`) works once Claude Code has loaded the mod from this folder at
 least once; loading it generates the type files in `.claude-plugin/types/`.
