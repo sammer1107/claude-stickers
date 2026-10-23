@@ -18,7 +18,7 @@ Tried caching the token in session.py; broke test_refresh because tokens.py re-r
 
 - **Writing:** Claude (or you) creates, edits and deletes stickers like any other file.
   There is no special tool. A short section in Claude's system prompt says what stickers
-  are and how to write one.
+  are and how to write one; subagents get the same text appended to their task.
 - **Recall:** after Claude reads, edits or writes `src/auth/session.py`, it sees (you don't):
 
   ```

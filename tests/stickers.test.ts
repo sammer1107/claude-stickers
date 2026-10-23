@@ -186,3 +186,23 @@ test('/clear starts over: stickers are shown in full again', async ($, on) => {
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
   expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
 })
+
+test('a subagent is told about stickers in its task', async ($, on) => {
+  let task = ''
+  on('agent.spawn', (_: unknown, e: { prompt: string }) => {
+    task = e.prompt
+    return { model: 'claude-sonnet-5-5', agentId: 'a1' }
+  })
+  await $.agent.spawn({
+    tool_use_id: 'toolu_1',
+    prompt: 'Fix the failing test.',
+    description: 'Fix test',
+    subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'claude-sonnet-5-5',
+    background: false,
+    fork: false,
+  })
+  expect(task.startsWith('Fix the failing test.')).toBe(true)
+  expect(task).toContain('Stickers: notes stuck on files')
+})
