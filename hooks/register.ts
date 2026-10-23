@@ -1,11 +1,11 @@
-// Shows an agent the stickers on a file whenever it reads, edits or writes that file,
-// and tells it once, in the system prompt (or a subagent's task), how to leave one. No tool
-// of its own: stickers are plain files the agent writes and edits with the tools it already has.
+// Shows an agent the stickers on a file whenever it reads, edits or writes that file. How to
+// write one is in the plugin's skill (skills/add-sticker), whose description every agent and
+// subagent sees; a system prompt section would be dropped where an organization seats
+// sec-default. No tool of its own: stickers are plain files written with the normal file tools.
 
 import type { EngineInterface, Register } from 'claude-code'
 import type { Shown } from '../types'
 import {
-  ABOUT,
   type Places,
   type Sticker,
   absolutePath,
@@ -24,14 +24,6 @@ const SHOWN = { plugin: 'stickers', key: 'shown' } as const
 const MAIN = 'main' // the main conversation's loop, which carries no agentId
 
 export const register: Register = on => {
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    return { sections: [...composed.sections, { id: 'stickers:about', text: ABOUT, scope: 'session' as const }] }
-  })
-
-  // A subagent's system prompt can't be reached, so it learns about stickers from its task.
-  on('agent.spawn', ($, e, next) => next({ ...e, prompt: `${e.prompt}\n\n${ABOUT}` })).catch(($, e, next) => next(e))
-
   // After the tool has run, add the file's stickers to what the model reads (the user never sees it).
   // Each agent (main conversation, each subagent) has its own context, so its own "already shown".
   // Only a Read gets the short "unchanged" reminder: an Edit or Write always follows a Read of

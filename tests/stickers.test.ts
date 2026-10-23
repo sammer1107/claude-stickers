@@ -182,18 +182,6 @@ test('a project without a .stickers folder works as usual', async ($, on) => {
   const ran = await $.tool.call({ tool: 'Read', file_path: 'D:\\proj\\src\\a.py' })
   expect(ran.context ?? []).toEqual([])
 })
-
-test('the system prompt says what stickers are and how to write one', async ($, on) => {
-  on('prompt.compose', () => ({ sections: [] }))
-  const { sections } = await $.prompt.compose({
-    model: 'claude-sonnet-5-5', promptModel: 'claude-sonnet-5-5', surfaces: [], tools: [], outputStyle: null, traits: [],
-  })
-  const about = sections.find(s => s.id === 'stickers:about')
-  expect(about?.text).toContain('.stickers/')
-  expect(about?.text).toContain('on: ')
-  expect(about?.text).toContain('~/.claude/stickers/')
-})
-
 // ------------------------------------------------------------------ user stickers
 
 const USER_SESSION = '---\non: D:/proj/src/auth/session.py\n---\nPersonal: I always forget this file has a gotcha.'
@@ -276,27 +264,6 @@ test('/clear starts over: stickers are shown in full again', async ($, on) => {
   await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
   expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
 })
-
-test('a subagent is told about stickers in its task', async ($, on) => {
-  let task = ''
-  on('agent.spawn', (_: unknown, e: { prompt: string }) => {
-    task = e.prompt
-    return { model: 'claude-sonnet-5-5', agentId: 'a1' }
-  })
-  await $.agent.spawn({
-    tool_use_id: 'toolu_1',
-    prompt: 'Fix the failing test.',
-    description: 'Fix test',
-    subagentType: 'general-purpose',
-    provider: { plugin: 'engine', tier: 'core' },
-    parentModel: 'claude-sonnet-5-5',
-    background: false,
-    fork: false,
-  })
-  expect(task.startsWith('Fix the failing test.')).toBe(true)
-  expect(task).toContain('Stickers: notes stuck on files')
-})
-
 // ------------------------------------------------------------------ .stickers/ in every ancestor folder
 
 test('a file in another project gets that project\'s stickers', async ($, on) => {

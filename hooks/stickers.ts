@@ -188,18 +188,3 @@ function indent(text: string): string {
     .map(line => `  ${line}`)
     .join('\n')
 }
-
-/** The system prompt section that says stickers exist and how to write one; not when to. */
-export const ABOUT = [
-  'Stickers: notes stuck on files in this project, kept across sessions.',
-  `To leave one, write a markdown file in the project root's ${STICKERS_DIR}/ (any name) that starts with a`,
-  `header naming the file or files it is stuck on, relative to the folder holding that ${STICKERS_DIR}/:`,
-  '---',
-  'on: src/example.py, src/other.py',
-  '---',
-  'Your note.',
-  `To keep a note out of the project (personal, or about a file outside it), write it in`,
-  `${USER_STICKERS_DIR}/ instead, with absolute or ~/ paths in its on: line.`,
-  'When you Read, Edit or Write a file, its stickers are shown to you with their paths, so you',
-  'can edit or delete them like any file.',
-].join('\n')

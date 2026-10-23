@@ -16,8 +16,9 @@ Do NOT reorder the imports. tokens.py monkey-patches time.time() on import; if s
 ```
 
 - **Writing:** Claude (or you) creates, edits and deletes stickers like any other file.
-  There is no special tool. A short section in Claude's system prompt says what stickers
-  are and how to write one; subagents get the same text appended to their task.
+  There is no special tool. The plugin's skill, `stickers:add-sticker`, tells Claude and its
+  subagents what stickers are and how to write
+  one.
 - **Recall:** The first time Claude reads, edits or writes a noted file like `src/auth/session.py`, it automatically sees:
 
   ```
