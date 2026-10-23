@@ -32,12 +32,14 @@ export const register: Register = on => {
 
   // After the tool has run, add the file's stickers to what the model reads (the user never sees it).
   // Each agent (main conversation, each subagent) has its own context, so its own "already shown".
+  // Only a Read gets the short "unchanged" reminder: an Edit or Write always follows a Read of
+  // the file, and the reminder would arrive after the change was already made.
   // If anything here fails, the tool's own result goes through unchanged.
-  on('tool.call', { tool: 'Read' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
+  on('tool.call', { tool: 'Read' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, true, next(e)))
     .catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'Edit' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
+  on('tool.call', { tool: 'Edit' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, false, next(e)))
     .catch(($, e, next) => next(e))
-  on('tool.call', { tool: 'Write' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
+  on('tool.call', { tool: 'Write' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, false, next(e)))
     .catch(($, e, next) => next(e))
 
   // Compaction summarises away what was shown, so that agent sees its stickers in full again.
@@ -65,21 +67,30 @@ async function withStickers<R extends { deny?: string; isError?: boolean; contex
   $: EngineInterface,
   agent: string,
   filePath: string,
+  remind: boolean,
   running: Promise<R>,
 ): Promise<R> {
   const ran = await running
   if (ran.deny !== undefined || ran.isError) return ran
   let note: string | null = null
   try {
-    note = await stickerNote($, agent, filePath)
+    note = await stickerNote($, agent, filePath, remind)
   } catch {
     return ran // stickers must never break a file tool
   }
   return note ? { ...ran, context: [...(ran.context ?? []), note] } : ran
 }
 
-/** The text to show for the file at `filePath`, or null when it has no stickers. */
-async function stickerNote($: EngineInterface, agent: string, filePath: string): Promise<string | null> {
+/**
+ * The text to show for the file at `filePath`, or null when there is nothing to show: no
+ * stickers, or nothing new and no reminder wanted (`remind` is false).
+ */
+async function stickerNote(
+  $: EngineInterface,
+  agent: string,
+  filePath: string,
+  remind: boolean,
+): Promise<string | null> {
   const root = await $.session.root()
   const windows = isWindowsRoot(root)
   const target = relativePath(filePath, root)
@@ -91,11 +102,11 @@ async function stickerNote($: EngineInterface, agent: string, filePath: string):
   if (stickers.length === 0) return null
 
   // Full text the first time this agent opens the file, and whenever a sticker changed;
-  // a short line otherwise.
+  // otherwise a short reminder, or nothing.
   const shown: Shown = (await $.state.get(SHOWN)).value ?? {}
   const key = `${agent}|${matchKey(target, windows)}`
   const sig = signature(stickers)
-  if (shown[key] === sig) return formatUnchanged(target, stickers.length)
+  if (shown[key] === sig) return remind ? formatUnchanged(target, stickers.length) : null
   await $.state.set(SHOWN, { ...shown, [key]: sig })
   return formatStickers(target, stickers, Date.now(), windows)
 }

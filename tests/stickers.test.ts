@@ -87,18 +87,28 @@ test('opening a file shows its stickers in full, with their path and the other f
   expect(shown).not.toContain('on: src/auth') // the header is left out
 })
 
-test('later opens show a short line until a sticker changes', async ($, on) => {
+test('later reads show a short line; later edits and writes show nothing, until a sticker changes', async ($, on) => {
   const mtimes = { 'cache-attempt.md': 1 }
   project(on, { 'cache-attempt.md': SESSION }, mtimes)
   const file = 'D:\\proj\\src\\auth\\session.py'
   await $.tool.call({ tool: 'Read', file_path: file })
 
-  const again = await $.tool.call({ tool: 'Edit', file_path: file, old_string: 'a', new_string: 'b' })
-  expect(again.context).toEqual(['Stickers on src/auth/session.py: 1, unchanged since shown.'])
+  const reread = await $.tool.call({ tool: 'Read', file_path: file })
+  expect(reread.context).toEqual(['Stickers on src/auth/session.py: 1, unchanged since shown.'])
+  const edited = await $.tool.call({ tool: 'Edit', file_path: file, old_string: 'a', new_string: 'b' })
+  expect(edited.context ?? []).toEqual([])
+  const written = await $.tool.call({ tool: 'Write', file_path: file, content: '' })
+  expect(written.context ?? []).toEqual([])
 
-  mtimes['cache-attempt.md'] = 2 // the sticker was edited
-  const changed = await $.tool.call({ tool: 'Write', file_path: file, content: '' })
+  mtimes['cache-attempt.md'] = 2 // the sticker was edited: even an Edit shows it in full
+  const changed = await $.tool.call({ tool: 'Edit', file_path: file, old_string: 'b', new_string: 'c' })
   expect((changed.context ?? []).join('\n')).toContain('Tried caching the token here')
+})
+
+test('an Edit as the first touch shows stickers in full', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION })
+  const edited = await $.tool.call({ tool: 'Edit', file_path: 'D:\\proj\\src\\auth\\session.py', old_string: 'a', new_string: 'b' })
+  expect((edited.context ?? []).join('\n')).toContain('Tried caching the token here')
 })
 
 test('a sticker on two files shows on both, each in full the first time', async ($, on) => {
