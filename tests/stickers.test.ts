@@ -140,10 +140,11 @@ test('the system prompt says what stickers are and how to write one', async ($, 
   expect(about?.text).toContain('on: ')
 })
 
-// ------------------------------------------------------------------ agents
+// ------------------------------------------------------------------ agents, compaction, /clear
 
 const FILE = 'D:\\proj\\src\\auth\\session.py'
 const isFull = (ran: { context?: readonly string[] }) => (ran.context ?? []).join('\n').includes('Tried caching')
+const SUMMARY = [{ role: 'user' as const, text: 'Summary of the conversation so far.', toolUses: [] }]
 const isShort = (ran: { context?: readonly string[] }) => (ran.context ?? []).join('\n').includes('unchanged since shown')
 
 test('each subagent sees stickers in full the first time, even after the main agent did', async ($, on) => {
@@ -152,4 +153,36 @@ test('each subagent sees stickers in full the first time, even after the main ag
   expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' }))).toBe(true)
   expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' }))).toBe(true)
   expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
+})
+
+test('after a compaction, that agent sees its stickers in full again; other agents do not', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION })
+  // Stands for the engine: the compaction went through, leaving its summary.
+  on('session.compact', () => ({ messages: SUMMARY }))
+  await $.tool.call({ tool: 'Read', file_path: FILE })
+  await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' })
+
+  await $.session.compact({ trigger: 'manual', messages: SUMMARY })
+  expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
+  expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' }))).toBe(true)
+
+  await $.session.compact({ trigger: 'auto', agentId: 'a1', messages: SUMMARY })
+  expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE, agentId: 'a1' }))).toBe(true)
+  expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
+})
+
+test('a skipped compaction changes nothing', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION })
+  on('session.compact', () => ({ skip: 'not now' }))
+  await $.tool.call({ tool: 'Read', file_path: FILE })
+  await $.session.compact({ trigger: 'manual', messages: SUMMARY })
+  expect(isShort(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
+})
+
+test('/clear starts over: stickers are shown in full again', async ($, on) => {
+  project(on, { 'cache-attempt.md': SESSION })
+  on('session.end', (_: unknown, e: { sessionId: string }) => ({ sessionId: e.sessionId }))
+  await $.tool.call({ tool: 'Read', file_path: FILE })
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } })
+  expect(isFull(await $.tool.call({ tool: 'Read', file_path: FILE }))).toBe(true)
 })

@@ -37,6 +37,25 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Write' }, ($, e, next) => withStickers($, e.agentId ?? MAIN, e.file_path, next(e)))
     .catch(($, e, next) => next(e))
 
+  // Compaction summarises away what was shown, so that agent sees its stickers in full again.
+  // (A precomputed compaction counts too: at worst one extra full display, never a missed note.)
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    if (result.messages) await forget($, e.agentId ?? MAIN)
+    return result
+  }).catch(($, e, next) => next(e)) // never get in the way of a compaction
+  // /clear starts the conversation over: nothing has been shown to anyone.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') await $.state.set(SHOWN, {})
+    return next(e)
+  })
+}
+
+/** Drops everything shown to one agent, so its next opens show stickers in full. */
+async function forget($: EngineInterface, agent: string): Promise<void> {
+  const shown: Shown = (await $.state.get(SHOWN)).value ?? {}
+  const kept = Object.fromEntries(Object.entries(shown).filter(([key]) => !key.startsWith(`${agent}|`)))
+  await $.state.set(SHOWN, kept)
 }
 
 async function withStickers<R extends { deny?: string; isError?: boolean; context?: readonly string[] }>(
